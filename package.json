@@ -1,0 +1,13 @@
+{
+  "name": "telegram-monitor-bot",
+  "version": "1.0.0",
+  "description": "Telegram monitor and OSINT bot with web server for Render",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "grammy": "^1.21.1",
+    "sqlite3": "^5.1.7"
+  }
+}
