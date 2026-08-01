@@ -1,0 +1,13 @@
+{
+  "name": "node-sessionbot",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@google/genai": "^0.1.1",
+    "node-telegram-bot-api": "^0.61.0",
+    "teleproto": "^1.0.0"
+  }
+}
