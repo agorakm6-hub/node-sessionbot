@@ -1,0 +1,10 @@
+{
+  "name": "channel-violation-scanner",
+  "version": "1.0.0",
+  "main": "bot.js",
+  "scripts": { "start": "node bot.js" },
+  "dependencies": {
+    "node-telegram-bot-api": "^0.66.0",
+    "teleproto": "^1.225.3"
+  }
+}
