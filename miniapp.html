@@ -1,0 +1,1064 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Channel Guard</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  /*
+    Концепция: не "тёмный дашборд с неоновым акцентом", а досмотровый
+    сканер — как рентген на таможне. Чёрно-графитовый корпус, янтарный
+    луч сканирования (основной сигнал), электрик-циан для ссылок/EU-права
+    (второй, холодный сигнал), красный — только для реальной опасности.
+    Инспекционный "штамп" на бейдже роли и хэдере — по смыслу приложения.
+  */
+  :root {
+    --bg: #060505;
+    --text: #f7f2ea;
+    --hint: #9c9285;
+    --link: #2fe0ff;
+    --button: #2fe0ff;
+    --button-text: #062029;
+    --secondary-bg: #17130e;
+    --section-bg: #150f0a;
+
+    --scan: #2fe0ff;
+    --scan-soft: rgba(47,224,255,0.16);
+    --cyan: #2fe0ff;
+    --ok: #38e07a;
+    --warn: #ffb300;
+    --danger: #ff3b3b;
+    --gold: #ffcf33;
+    --border: rgba(105,219,255,0.16);
+    --border-soft: rgba(255,255,255,0.07);
+
+    --sev1: #38e07a; --sev2: #b6e02f; --sev3: #ffcf33; --sev4: #ff8a2b; --sev5: #ff3b3b;
+
+    --font-display: "Space Grotesk", ui-sans-serif, sans-serif;
+    --font-body: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+  }
+
+  /* ---------- Состояние сканера: едва заметный тон фона по результату ----------
+     idle — нейтрально, safe — лёгкий зелёный, danger — лёгкий красный.
+     Раньше заливка была слишком яркой/синей и перебивала остальной дизайн — теперь тонко. */
+  body { --tint: rgba(47,224,255,0.06); }
+  body[data-state="safe"] { --tint: rgba(56,224,122,0.08); }
+  body[data-state="danger"] { --tint: rgba(255,59,59,0.09); }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; padding: 0; }
+  html { overflow-x: hidden; background: #060505; }
+  /* ---------- Фон: спокойная прямая сетка + один чёткий бегущий луч сканера ---------- */
+  body {
+    background:
+      repeating-linear-gradient(0deg, rgba(255,255,255,0.028) 0px, rgba(255,255,255,0.028) 1px, transparent 1px, transparent 32px),
+      repeating-linear-gradient(90deg, rgba(255,255,255,0.028) 0px, rgba(255,255,255,0.028) 1px, transparent 1px, transparent 32px),
+      radial-gradient(ellipse 75% 38% at 50% -6%, var(--tint), transparent 62%),
+      var(--bg);
+    color: var(--text);
+    font-family: var(--font-body);
+    padding: 14px 14px calc(28px + env(safe-area-inset-bottom)) 14px;
+    min-height: 100vh;
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+    max-width: 100vw;
+    position: relative;
+  }
+  /* Бегущий луч сканера — единственный подвижный акцент фона, читается чётко и не мешает */
+  @keyframes scanBeamY { 0% { transform: translateY(-30vh); } 100% { transform: translateY(130vh); } }
+  body::before {
+    content: ''; position: fixed; left: -10%; right: -10%; height: 22vh; top: 0;
+    background: linear-gradient(180deg, transparent, rgba(47,224,255,0.09) 45%, rgba(47,224,255,0.14) 50%, rgba(47,224,255,0.09) 55%, transparent);
+    pointer-events: none; z-index: 0; mix-blend-mode: screen;
+    animation: scanBeamY 8s linear infinite;
+  }
+  body > * { position: relative; z-index: 1; }
+  @media (prefers-reduced-motion: reduce) { body::before { animation: none !important; } }
+  * { min-width: 0; } /* подстраховка: длинный текст в flex-контейнерах переносится, а не выпирает за карточку */
+  .mono { font-family: var(--font-mono); }
+
+  /* ---------- Флеш на весь экран при результате: 5 плавных пульсов ---------- */
+  .flash-layer {
+    position: fixed; inset: 0; pointer-events: none; z-index: 999; opacity: 0;
+  }
+  .flash-layer.safe { background: radial-gradient(ellipse 100% 70% at 50% 30%, rgba(56,224,122,0.35), transparent 70%); animation: flashPulse 2.6s ease-in-out; }
+  .flash-layer.danger { background: radial-gradient(ellipse 100% 70% at 50% 30%, rgba(255,59,59,0.35), transparent 70%); animation: flashPulse 2.6s ease-in-out; }
+  @keyframes flashPulse {
+    0%, 100% { opacity: 0; }
+    10%, 30%, 50%, 70%, 90% { opacity: 1; }
+    20%, 40%, 60%, 80% { opacity: 0; }
+  }
+
+  /* ---------- Иконки: тонкая линия, currentColor, вместо стоковых эмодзи ---------- */
+  .ic {
+    width: 1.05em; height: 1.05em; display: inline-block; vertical-align: -0.16em;
+    flex-shrink: 0; stroke: currentColor; fill: none; stroke-width: 1.8;
+    stroke-linecap: round; stroke-linejoin: round;
+  }
+  .ic-fill { fill: currentColor; stroke: none; }
+  .ic-amber { color: var(--scan); }
+  .ic-cyan { color: var(--cyan); }
+  .ic-danger { color: var(--danger); }
+  .ic-ok { color: var(--ok); }
+  .ic-gold { color: var(--gold); }
+  .ic-muted { color: var(--hint); }
+
+  /* ---------- Анимации иконок — у каждой смысловая, а не одна на все ---------- */
+  @keyframes icSpin { to { transform: rotate(360deg); } }
+  @keyframes icPulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: .6; transform: scale(1.14); } }
+  @keyframes icFloat { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-2.5px); } }
+  @keyframes icTwinkle { 0%, 100% { transform: scale(1) rotate(0deg); opacity: 1; } 50% { transform: scale(1.25) rotate(16deg); opacity: .65; } }
+  @keyframes icWiggle { 0%, 100% { transform: rotate(0deg); } 25% { transform: rotate(-10deg); } 75% { transform: rotate(10deg); } }
+  @keyframes icTilt { 0%, 100% { transform: rotate(0deg); } 50% { transform: rotate(7deg); } }
+  @keyframes icNudgeBack { 0%, 100% { transform: translateX(0); } 50% { transform: translateX(-3px); } }
+  @keyframes icBounceDown { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(2.5px); } }
+  @keyframes icFlicker { 0%, 100%, 45%, 55% { opacity: 1; } 48%, 52% { opacity: .35; } }
+  @keyframes icBounceIn { 0% { transform: scale(.3); opacity: 0; } 60% { transform: scale(1.2); opacity: 1; } 100% { transform: scale(1); } }
+  @keyframes icShake { 0%, 100% { transform: translateX(0); } 20% { transform: translateX(-2.5px); } 40% { transform: translateX(2.5px); } 60% { transform: translateX(-1.5px); } 80% { transform: translateX(1.5px); } }
+
+  .ic-spin { animation: icSpin 7s linear infinite; transform-origin: 50% 50%; }
+  .ic-spin-fast { animation: icSpin 1.1s linear infinite; transform-origin: 50% 50%; }
+  .ic-pulse { animation: icPulse 2.4s ease-in-out infinite; transform-origin: 50% 50%; }
+  .ic-float { animation: icFloat 2.3s ease-in-out infinite; }
+  .ic-twinkle { animation: icTwinkle 2.4s ease-in-out infinite; transform-origin: 50% 50%; }
+  .ic-wiggle { animation: icWiggle 3s ease-in-out infinite; transform-origin: 50% 50%; }
+  .ic-tilt { animation: icTilt 2.8s ease-in-out infinite; transform-origin: 50% 50%; }
+  .ic-nudge-back { animation: icNudgeBack 1.6s ease-in-out infinite; }
+  .ic-bounce-down { animation: icBounceDown 1.7s ease-in-out infinite; }
+  .ic-flicker { animation: icFlicker 3.4s ease-in-out infinite; }
+  .ic-bouncein { animation: icBounceIn .5s cubic-bezier(.34,1.56,.64,1) both; }
+  .ic-shake { animation: icShake .5s ease both; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .ic-spin, .ic-spin-fast, .ic-pulse, .ic-float, .ic-twinkle, .ic-wiggle, .ic-tilt,
+    .ic-nudge-back, .ic-bounce-down, .ic-flicker, .ic-bouncein, .ic-shake,
+    .brand-mark, .user-chip .avatar { animation: none !important; }
+  }
+
+  /* ---------- Topbar ---------- */
+  .topbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 6px; }
+  .brand { display: flex; align-items: center; gap: 11px; }
+  @keyframes brandGlow { 0%, 100% { box-shadow: 0 0 18px -4px rgba(47,224,255,0.55), inset 0 0 12px rgba(47,224,255,0.08); } 50% { box-shadow: 0 0 26px -2px rgba(47,224,255,0.85), inset 0 0 16px rgba(47,224,255,0.16); } }
+  .brand-mark {
+    width: 38px; height: 38px; border-radius: 11px; flex-shrink: 0; position: relative;
+    background: linear-gradient(155deg, rgba(47,224,255,0.28), rgba(47,224,255,0.05));
+    border: 1px solid rgba(47,224,255,0.45);
+    box-shadow: 0 0 18px -4px rgba(47,224,255,0.55), inset 0 0 12px rgba(47,224,255,0.08);
+    display: flex; align-items: center; justify-content: center;
+    animation: brandGlow 2.6s ease-in-out infinite;
+  }
+  .brand-mark svg { width: 20px; height: 20px; display: block; }
+  h1 {
+    font-family: var(--font-display); font-size: 18px; letter-spacing: -0.01em;
+    margin: 0; font-weight: 700; line-height: 1.15;
+  }
+  .brand-eyebrow {
+    font-family: var(--font-mono); font-size: 9.5px; color: var(--cyan); letter-spacing: .14em;
+    text-transform: uppercase; margin-bottom: 2px; opacity: .85;
+  }
+  .sub { color: var(--hint); font-size: 12.5px; margin: 8px 2px 16px; letter-spacing: .01em; }
+
+  /* Инспекционный штамп-бейдж вместо обычной пилюли */
+  .badge {
+    font-family: var(--font-mono); font-size: 10px; padding: 6px 10px; border-radius: 7px;
+    background: transparent; color: var(--hint); border: 1.5px dashed var(--border-soft);
+    white-space: nowrap; text-transform: uppercase; letter-spacing: .08em; font-weight: 600;
+  }
+  .badge.owner { color: var(--scan); border-color: rgba(47,224,255,0.5); background: rgba(47,224,255,0.08); }
+
+  /* ---------- Cards ---------- */
+  .card {
+    background: linear-gradient(180deg, var(--section-bg), rgba(0,0,0,0.15));
+    border: 1px solid var(--border-soft);
+    border-top: 1px solid rgba(47,224,255,0.22);
+    border-radius: 16px; padding: 18px; margin-bottom: 12px;
+    box-shadow: 0 20px 40px -24px rgba(0,0,0,0.85), inset 0 1px 0 rgba(255,255,255,0.03);
+  }
+
+  /* ---------- Segmented mode switch ---------- */
+  .row { display: flex; gap: 6px; padding: 4px; background: rgba(0,0,0,0.35); border-radius: 12px; border: 1px solid var(--border-soft); }
+  .chip {
+    flex: 1; text-align: center; padding: 11px 8px; border-radius: 9px; background: transparent;
+    border: none; color: var(--hint); font-weight: 600; font-size: 13.5px; cursor: pointer;
+    transition: background .18s ease, color .18s ease, box-shadow .18s ease;
+    display: flex; align-items: center; justify-content: center; gap: 6px;
+  }
+  .chip.active {
+    background: linear-gradient(155deg, rgba(47,224,255,0.22), rgba(47,224,255,0.06));
+    color: var(--scan);
+    box-shadow: inset 0 0 0 1px rgba(47,224,255,0.4), 0 0 16px -6px rgba(47,224,255,0.5);
+  }
+  .chip:active { transform: scale(0.97); }
+
+  .field-label { font-size: 10.5px; color: var(--hint); margin: 14px 0 6px 2px; text-transform: uppercase; letter-spacing: .1em; font-weight: 700; }
+  input[type=text] {
+    width: 100%; padding: 13px 14px; border-radius: 11px; border: 1px solid var(--border-soft);
+    background: rgba(0,0,0,0.35); color: var(--text); font-size: 14px; font-family: var(--font-mono);
+    outline: none; transition: border-color .15s ease, box-shadow .15s ease;
+  }
+  input[type=text]::placeholder { color: var(--hint); font-family: var(--font-body); opacity: .8; }
+  input[type=text]:focus { border-color: var(--scan); box-shadow: 0 0 0 3px rgba(47,224,255,0.14); }
+
+  .btn {
+    display: flex; align-items: center; justify-content: center; gap: 6px;
+    width: 100%; padding: 14px; border-radius: 12px; border: none;
+    background: linear-gradient(155deg, #7de9ff, var(--button));
+    color: var(--button-text); font-weight: 800; font-size: 14.5px;
+    font-family: var(--font-body);
+    margin-top: 12px; cursor: pointer; text-align: center;
+    box-shadow: 0 14px 28px -14px rgba(47,224,255,0.65);
+    transition: transform .12s ease, box-shadow .12s ease, opacity .12s ease;
+  }
+  .btn:active { transform: scale(0.98); box-shadow: 0 6px 16px -10px rgba(47,224,255,0.55); }
+  .btn.secondary { background: rgba(255,255,255,0.04); color: var(--text); box-shadow: none; border: 1px solid var(--border-soft); }
+  .btn.danger {
+    background: repeating-linear-gradient(135deg, rgba(255,59,59,0.16), rgba(255,59,59,0.16) 8px, rgba(255,59,59,0.08) 8px, rgba(255,59,59,0.08) 16px);
+    color: #ffb0b0; border: 1px solid rgba(255,59,59,0.4); box-shadow: none;
+  }
+  .btn.danger:active { background: rgba(255,59,59,0.24); }
+  .btn:disabled { opacity: .4; box-shadow: none; }
+
+  .banner {
+    padding: 11px 13px; border-radius: 11px; font-size: 13px; margin-bottom: 12px;
+    border: 1px solid transparent; line-height: 1.4;
+  }
+  .banner.warn { background: rgba(255,179,0,0.1); color: #ffcf6b; border-color: rgba(255,179,0,0.3); }
+  .banner.err { background: rgba(255,59,59,0.1); color: #ff9494; border-color: rgba(255,59,59,0.3); }
+
+  /* ---------- Signature element: досмотровый сканер / прицел-локатор ---------- */
+  /* ================= СКАНЕР-ПОЛОСА (вместо радара) ================= */
+  .scanbar-wrap { padding: 18px 0 6px; }
+  .scan-gear-wrap { display: flex; justify-content: center; margin-bottom: 6px; }
+  .scan-gear {
+    width: 64px; height: 64px; color: var(--scan); opacity: .95;
+    filter: drop-shadow(0 0 16px rgba(47,224,255,.5));
+    animation: icSpin 3.2s linear infinite;
+    transform-origin: 50% 50%;
+  }
+  @media (prefers-reduced-motion: reduce) { .scan-gear { animation: none !important; } }
+  .scanbar-pct { text-align: center; font-family: var(--font-mono); font-size: 40px; font-weight: 700; letter-spacing: -0.02em; text-shadow: 0 0 22px rgba(47,224,255,0.4); }
+  .scanbar-label { text-align: center; font-size: 10.5px; color: var(--hint); text-transform: uppercase; letter-spacing: .1em; margin-top: -4px; margin-bottom: 16px; }
+  .scanbar-track {
+    position: relative; height: 44px; border-radius: 12px; overflow: hidden;
+    background: repeating-linear-gradient(90deg, rgba(255,255,255,0.045) 0 2px, transparent 2px 9px);
+    border: 1px solid var(--border-soft);
+  }
+  .scanbar-fill {
+    position: absolute; inset: 0; width: 0%; border-radius: 12px 0 0 12px;
+    background: linear-gradient(90deg, rgba(47,224,255,0.15), rgba(47,224,255,0.42));
+    transition: width .45s cubic-bezier(.4,0,.2,1);
+  }
+  .scanbar-head {
+    position: absolute; top: -3px; bottom: -3px; width: 3px; left: 0%;
+    background: var(--cyan); box-shadow: 0 0 14px 3px rgba(47,224,255,0.85), 0 0 30px 6px rgba(47,224,255,0.35);
+    transition: left .45s cubic-bezier(.4,0,.2,1);
+  }
+  .scanbar-head::before, .scanbar-head::after {
+    content: ''; position: absolute; left: 50%; width: 12px; height: 12px; border-radius: 50%;
+    background: rgba(47,224,255,0.5); transform: translateX(-50%); animation: scanbarPing 1.4s ease-out infinite;
+  }
+  .scanbar-head::after { top: auto; bottom: 0; animation-delay: .35s; }
+  .scanbar-head::before { top: 0; }
+  @keyframes scanbarPing { 0% { opacity: .8; transform: translateX(-50%) scale(0.3); } 100% { opacity: 0; transform: translateX(-50%) scale(2.4); } }
+  .scanbar-glint {
+    position: absolute; top: 0; bottom: 0; width: 40px; left: -40px;
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,0.4), transparent);
+    animation: scanbarGlint 2.1s ease-in-out infinite;
+  }
+  @keyframes scanbarGlint { 0% { left: -15%; } 100% { left: 115%; } }
+  .scan-stats { display: flex; justify-content: center; gap: 10px; margin-top: 20px; width: 100%; }
+  .stat-pill {
+    flex: 1; display: flex; flex-direction: column; align-items: center; gap: 2px;
+    padding: 10px 6px; border-radius: 11px; background: rgba(0,0,0,0.35); border: 1px solid var(--border-soft);
+  }
+  @keyframes bump { 0% { transform: scale(1); } 40% { transform: scale(1.18); } 100% { transform: scale(1); } }
+  .stat-pill b { font-family: var(--font-mono); font-size: 16px; color: var(--text); font-weight: 700; }
+  @keyframes bump { 0% { transform: scale(1); } 40% { transform: scale(1.18); } 100% { transform: scale(1); } }
+  .stat-pill b.bump { animation: bump .28s ease; display: inline-block; }
+  .stat-pill span { font-size: 9.5px; color: var(--hint); text-transform: uppercase; letter-spacing: .06em; }
+  .stat-pill.viol b { color: var(--danger); }
+
+  /* ---------- Violation rows ---------- */
+  .vrow {
+    padding: 13px; margin-bottom: 8px; border-radius: 12px; display: flex; gap: 11px;
+    background: rgba(0,0,0,0.3); border: 1px solid var(--border-soft); border-left: 2px solid rgba(47,224,255,0.3);
+  }
+  .vidx {
+    font-family: var(--font-mono); font-size: 11px; color: var(--hint); flex-shrink: 0; width: 26px;
+    padding-top: 2px;
+  }
+  .vsev { display: flex; gap: 3px; margin: 0 0 6px; }
+  .vsev i { width: 13px; height: 4px; border-radius: 2px; background: rgba(255,255,255,0.09); display: block; }
+  .vcat { font-family: var(--font-display); font-weight: 600; font-size: 14px; letter-spacing: -0.01em; }
+  .vreason { font-size: 12.5px; color: var(--hint); margin-top: 4px; line-height: 1.45; }
+  .vlink { font-family: var(--font-mono); font-size: 11px; color: var(--link); margin-top: 6px; display: inline-block; text-decoration: none; word-break: break-all; overflow-wrap: anywhere; max-width: 100%; }
+
+  /* ---------- Reports ---------- */
+  .report-card {
+    background: rgba(0,0,0,0.3); border-radius: 12px; padding: 13px; margin-top: 10px;
+    border: 1px solid var(--border-soft); border-left: 3px solid var(--scan);
+  }
+  .report-text { white-space: pre-wrap; font-size: 12.5px; line-height: 1.55; font-family: var(--font-mono); color: var(--text); word-break: break-word; overflow-wrap: anywhere; }
+  .copy-btn {
+    font-family: var(--font-body); font-size: 11.5px; font-weight: 700; padding: 7px 12px; border-radius: 9px;
+    background: rgba(47,224,255,0.1); color: var(--scan); border: 1px solid rgba(47,224,255,0.3); margin-top: 9px; cursor: pointer;
+  }
+  .copy-btn:active { background: rgba(47,224,255,0.2); }
+  .laws { margin-top: 10px; font-size: 11.5px; color: var(--hint); }
+  .laws a { font-family: var(--font-mono); color: var(--cyan); display: block; margin-top: 4px; word-break: break-all; text-decoration: none; }
+
+  .hidden { display: none !important; }
+  .empty { text-align: center; color: var(--hint); font-size: 13px; padding: 34px 10px; }
+  .empty .empty-icon { font-size: 26px; margin-bottom: 8px; }
+
+  /* ---------- Topbar: шестерёнка настроек слева, юзер-чип справа ---------- */
+  .icon-btn {
+    width: 38px; height: 38px; border-radius: 11px; flex-shrink: 0; display: flex; align-items: center; justify-content: center;
+    background: rgba(255,255,255,0.03); border: 1px solid var(--border-soft); color: var(--hint); cursor: pointer;
+    transition: transform .15s ease, color .15s ease, border-color .15s ease;
+    outline: none; -webkit-tap-highlight-color: transparent;
+  }
+  .icon-btn:active { transform: scale(0.92) rotate(20deg); }
+  .icon-btn:focus:not(:focus-visible) { outline: none; }
+  .icon-btn.spin-hover { color: var(--scan); border-color: rgba(47,224,255,0.4); box-shadow: 0 0 14px -3px rgba(47,224,255,0.6); }
+  @keyframes icSpinOnce { to { transform: rotate(360deg); } }
+  .ic-spin-once { animation: icSpinOnce .6s ease; transform-origin: 50% 50%; }
+  .user-chip {
+    display: flex; align-items: center; gap: 6px; font-family: var(--font-mono); font-size: 11.5px;
+    padding: 6px 10px 6px 6px; border-radius: 20px; background: rgba(255,255,255,0.03); border: 1px solid var(--border-soft); color: var(--text);
+    max-width: 100%; min-width: 0;
+  }
+  .user-chip span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  @keyframes avatarPulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(47,224,255,0.35); } 50% { box-shadow: 0 0 0 3px rgba(47,224,255,0.12); } }
+  .user-chip .avatar {
+    width: 20px; height: 20px; border-radius: 50%; background: linear-gradient(155deg, rgba(47,224,255,0.5), rgba(47,224,255,0.15));
+    display: flex; align-items: center; justify-content: center; color: var(--scan); flex-shrink: 0;
+    animation: avatarPulse 2.6s ease-in-out infinite;
+  }
+  .user-chip .avatar svg { width: 12px; height: 12px; }
+  .topbar-right { display: flex; flex-direction: column; align-items: flex-end; gap: 5px; min-width: 0; max-width: 55%; }
+
+  /* ---------- Экран настроек ---------- */
+  .settings-tabs { display: flex; gap: 6px; padding: 4px; background: rgba(0,0,0,0.35); border-radius: 12px; border: 1px solid var(--border-soft); margin-bottom: 16px; }
+  .settings-tab {
+    flex: 1; text-align: center; padding: 10px 6px; border-radius: 9px; background: transparent; border: none;
+    color: var(--hint); font-weight: 600; font-size: 12.5px; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 5px;
+  }
+  .settings-tab.active { background: linear-gradient(155deg, rgba(47,224,255,0.22), rgba(47,224,255,0.06)); color: var(--scan); box-shadow: inset 0 0 0 1px rgba(47,224,255,0.4); }
+  .settings-pane { display: none; }
+  .settings-pane.active { display: block; }
+
+  .instr-step {
+    display: flex; gap: 11px; padding: 12px 0; border-bottom: 1px solid var(--border-soft);
+  }
+  .instr-step:last-child { border-bottom: none; }
+  .instr-num {
+    width: 24px; height: 24px; border-radius: 50%; background: rgba(47,224,255,0.12); border: 1px solid rgba(47,224,255,0.35);
+    color: var(--scan); font-family: var(--font-mono); font-size: 12px; font-weight: 700; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .instr-text { font-size: 13px; line-height: 1.5; padding-top: 2px; }
+  .instr-text b { color: var(--text); }
+  .dsa-link-btn {
+    display: flex; align-items: center; justify-content: center; gap: 7px; width: 100%; padding: 13px; border-radius: 12px;
+    background: rgba(47,224,255,0.1); border: 1px solid rgba(47,224,255,0.35); color: var(--scan);
+    font-weight: 700; font-size: 13.5px; text-decoration: none; margin-bottom: 14px; cursor: pointer;
+  }
+  .vpn-note {
+    display: flex; gap: 9px; padding: 12px; border-radius: 11px; background: rgba(255,179,0,0.08);
+    border: 1px solid rgba(255,179,0,0.3); color: #ffcf6b; font-size: 12.5px; line-height: 1.45; margin-bottom: 14px;
+  }
+
+  /* ---------- Premium вкладка ---------- */
+  .premium-hero {
+    text-align: center; padding: 22px 12px; border-radius: 14px; margin-bottom: 14px;
+    background: linear-gradient(165deg, rgba(255,207,51,0.14), rgba(255,207,51,0.02));
+    border: 1px solid rgba(255,207,51,0.3);
+  }
+  .premium-hero .ic { width: 32px; height: 32px; color: var(--gold); margin-bottom: 8px; }
+  .premium-hero h2 { font-family: var(--font-display); font-size: 17px; margin: 0 0 4px; color: var(--gold); }
+  .premium-perk { display: flex; align-items: center; gap: 10px; padding: 10px 0; font-size: 13px; }
+  .premium-perk .ic { color: var(--gold); flex-shrink: 0; }
+  .btn.gold {
+    background: linear-gradient(155deg, #ffe08a, var(--gold)); color: #3a2600; box-shadow: 0 14px 28px -14px rgba(255,207,51,0.6);
+  }
+  .premium-active-badge {
+    display: flex; align-items: center; justify-content: center; gap: 8px; padding: 14px; border-radius: 12px;
+    background: rgba(255,207,51,0.1); border: 1px solid rgba(255,207,51,0.35); color: var(--gold); font-weight: 700; font-size: 13.5px;
+  }
+  .limit-status { font-size: 12.5px; color: var(--hint); line-height: 1.5; padding: 12px 0; border-top: 1px solid var(--border-soft); margin-top: 4px; }
+
+  /* ---------- Админ-вкладка ---------- */
+  .admin-row {
+    display: flex; align-items: center; gap: 10px; padding: 11px 0; border-bottom: 1px solid var(--border-soft);
+  }
+  .admin-row:last-child { border-bottom: none; }
+  .admin-row .who { flex: 1; min-width: 0; font-family: var(--font-mono); font-size: 12.5px; word-break: break-word; overflow-wrap: anywhere; }
+  .admin-row .who .tag { display: block; font-size: 10px; color: var(--hint); font-family: var(--font-body); margin-top: 2px; }
+  .mini-btn {
+    font-size: 10.5px; font-weight: 700; padding: 6px 9px; border-radius: 8px; cursor: pointer; white-space: nowrap;
+    border: 1px solid var(--border-soft); background: rgba(255,255,255,0.03); color: var(--text);
+  }
+  .mini-btn.danger { color: #ff9494; border-color: rgba(255,59,59,0.35); background: rgba(255,59,59,0.08); }
+  .mini-btn.ok { color: #7cf0a8; border-color: rgba(56,224,122,0.35); background: rgba(56,224,122,0.08); }
+  .mini-btn.gold { color: var(--gold); border-color: rgba(255,207,51,0.35); background: rgba(255,207,51,0.08); }
+
+  @media (prefers-reduced-motion: reduce) {
+    .scanbar-head::before, .scanbar-head::after, .scanbar-glint { animation: none !important; }
+    .screen-enter, .vrow, .report-card { animation: none !important; }
+  }
+
+  /* ---------- Анимации переходов между экранами и появления элементов ---------- */
+  @keyframes screenIn {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .screen-enter { animation: screenIn .38s cubic-bezier(.2,.7,.3,1) both; }
+
+  @keyframes rowIn {
+    from { opacity: 0; transform: translateY(6px) scale(.98); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
+  }
+  .vrow, .report-card { animation: rowIn .3s ease both; }
+
+  @keyframes inputGlow {
+    0%, 100% { box-shadow: 0 0 0 3px rgba(47,224,255,0.14); }
+    50% { box-shadow: 0 0 0 5px rgba(47,224,255,0.22); }
+  }
+  input[type=text].live:focus { animation: inputGlow 1.8s ease-in-out infinite; }
+</style>
+</head>
+<body>
+
+  <div class="flash-layer" id="flashLayer"></div>
+
+  <div class="topbar">
+    <div style="display:flex;align-items:center;gap:11px">
+      <button class="icon-btn" id="settingsBtn" title="Настройки">
+        <svg class="ic" id="gearIcon" viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="6.6"/>
+          <circle cx="12" cy="12" r="2.4"/>
+          <rect x="10.7" y="0.9" width="2.6" height="3" rx="0.6" class="ic-fill" transform="rotate(0 12 12)"/>
+          <rect x="10.7" y="0.9" width="2.6" height="3" rx="0.6" class="ic-fill" transform="rotate(45 12 12)"/>
+          <rect x="10.7" y="0.9" width="2.6" height="3" rx="0.6" class="ic-fill" transform="rotate(90 12 12)"/>
+          <rect x="10.7" y="0.9" width="2.6" height="3" rx="0.6" class="ic-fill" transform="rotate(135 12 12)"/>
+          <rect x="10.7" y="0.9" width="2.6" height="3" rx="0.6" class="ic-fill" transform="rotate(180 12 12)"/>
+          <rect x="10.7" y="0.9" width="2.6" height="3" rx="0.6" class="ic-fill" transform="rotate(225 12 12)"/>
+          <rect x="10.7" y="0.9" width="2.6" height="3" rx="0.6" class="ic-fill" transform="rotate(270 12 12)"/>
+          <rect x="10.7" y="0.9" width="2.6" height="3" rx="0.6" class="ic-fill" transform="rotate(315 12 12)"/>
+        </svg>
+      </button>
+      <div class="brand">
+        <div class="brand-mark">
+          <svg viewBox="0 0 24 24" fill="none"><path d="M12 2.5l7.5 3v5.2c0 4.9-3.2 8.9-7.5 10.3-4.3-1.4-7.5-5.4-7.5-10.3V5.5l7.5-3z" stroke="#2fe0ff" stroke-width="1.6" stroke-linejoin="round"/><path d="M8.7 12.2l2.3 2.3 4.3-4.6" stroke="#2fe0ff" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </div>
+        <div>
+          <h1>Channel Guard</h1>
+        </div>
+      </div>
+    </div>
+    <div class="topbar-right">
+      <span class="badge" id="roleBadge"></span>
+      <div class="user-chip" id="userChip">
+        <span class="avatar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="3.2"/><path d="M5 20c1-4 4-6 7-6s6 2 7 6"/></svg></span>
+        <span id="userChipName">…</span>
+      </div>
+    </div>
+  </div>
+  <div class="sub">Проверка каналов и групп на нарушения ToS и права EU</div>
+
+  <div id="banner"></div>
+
+  <!-- Экран настроек -->
+  <div id="screenSettings" class="card hidden">
+    <div class="settings-tabs">
+      <button class="settings-tab active" data-tab="instr"><svg class="ic ic-wiggle" viewBox="0 0 24 24"><path d="M4 19V5a1 1 0 011-1h11l4 4v11a1 1 0 01-1 1H5a1 1 0 01-1-1z"/><path d="M9 9h6M9 13h6M9 17h3"/></svg> Как отправить</button>
+      <button class="settings-tab" data-tab="premium"><svg class="ic ic-twinkle" viewBox="0 0 24 24"><path d="M12 3l1.7 4.3L18 9l-4.3 1.7L12 15l-1.7-4.3L6 9l4.3-1.7L12 3z"/></svg> Premium</button>
+      <button class="settings-tab hidden" id="adminTab" data-tab="admin"><svg class="ic ic-float" viewBox="0 0 24 24"><path d="M3.5 8l4 3 4.5-5.5L16.5 11l4-3-1.7 9H5.2L3.5 8z"/></svg> Админ</button>
+    </div>
+
+    <div class="settings-pane active" id="paneInstr">
+      <div class="vpn-note">
+        <svg class="ic ic-pulse" viewBox="0 0 24 24" style="flex-shrink:0;margin-top:1px"><path d="M12 4l9 15.5H3L12 4z"/><path d="M12 10v4M12 16.8h.01"/></svg>
+        <div><b>Обязательно включи VPN (Нидерланды)</b> перед заходом на сайт DSA-репортов — без этого форма может не открыться или работать некорректно.</div>
+      </div>
+      <a class="dsa-link-btn" href="https://telegram.org/dsa-report" target="_blank">
+        <svg class="ic ic-wiggle" viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9"/><path d="M18 13v6a1 1 0 01-1 1H5a1 1 0 01-1-1V7a1 1 0 011-1h6"/></svg>
+        Открыть telegram.org/dsa-report
+      </a>
+      <div class="instr-step"><div class="instr-num">1</div><div class="instr-text">Зайди на сайт с включённым VPN и <b>зарегистрируйся</b> (или войди).</div></div>
+      <div class="instr-step"><div class="instr-num">2</div><div class="instr-text">Вставь <b>ссылку на канал/группу</b>, которую сканировал бот.</div></div>
+      <div class="instr-step"><div class="instr-num">3</div><div class="instr-text">Вставь <b>ссылку на конкретное сообщение-нарушение</b> из результата скана.</div></div>
+      <div class="instr-step"><div class="instr-num">4</div><div class="instr-text">Выбери <b>причину жалобы</b>, максимально близкую к категории нарушения.</div></div>
+      <div class="instr-step"><div class="instr-num">5</div><div class="instr-text">Вставь <b>текст репорта</b>, который сгенерировал бот (кнопка «Скопировать репорт»).</div></div>
+      <div class="instr-step"><div class="instr-num">6</div><div class="instr-text">Отметь, что подаёшь жалобу <b>как житель EU</b>.</div></div>
+      <div class="instr-step"><div class="instr-num">7</div><div class="instr-text">В поле закона вставь <b>ссылку на закон</b>, которую дал бот.</div></div>
+      <div class="instr-step"><div class="instr-num">8</div><div class="instr-text">Пункт с <b>документацией — пропусти</b> и отправляй форму.</div></div>
+    </div>
+
+    <div class="settings-pane" id="panePremium">
+      <div id="premiumContent"></div>
+    </div>
+
+    <div class="settings-pane" id="paneAdmin">
+      <div id="adminContent"></div>
+    </div>
+
+    <button class="btn secondary" id="backFromSettingsBtn" style="margin-top:16px"><svg class="ic ic-nudge-back" viewBox="0 0 24 24"><path d="M14.5 5.5l-6.5 6.5 6.5 6.5"/></svg> Назад</button>
+  </div>
+
+  <!-- Экран 1: ввод -->
+  <div id="screenInput" class="card">
+    <div class="row">
+      <div class="chip active" id="chipChannel" data-mode="channel"><svg class="ic ic-float" viewBox="0 0 24 24"><circle cx="12" cy="19" r="1.6" class="ic-fill"/><path d="M8.5 14.7a5 5 0 017 0M5.3 11.5a9.3 9.3 0 0113.4 0"/></svg> Канал</div>
+      <div class="chip" id="chipGroup" data-mode="group"><svg class="ic ic-float" viewBox="0 0 24 24"><circle cx="9" cy="8.5" r="3"/><path d="M2.7 19c.7-3.3 3.1-5 6.3-5s5.6 1.7 6.3 5"/><path d="M15.8 5.2a3 3 0 010 6.4"/><path d="M17.2 14.2c2 .5 3.4 1.9 3.8 4.3"/></svg> Группа</div>
+    </div>
+    <div class="field-label">Ссылка на объект проверки</div>
+    <input type="text" id="linkInput" placeholder="https://t.me/name или https://t.me/+xxxx">
+    <button class="btn" id="startBtn">Начать скан</button>
+  </div>
+
+  <!-- Экран 2: скан -->
+  <div id="screenScan" class="card hidden">
+    <div class="scanbar-wrap">
+      <div class="scan-gear-wrap">
+        <svg class="scan-gear" viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="6.6"/>
+          <circle cx="12" cy="12" r="2.4"/>
+          <rect x="10.7" y="0.9" width="2.6" height="3" rx="0.6" class="ic-fill" transform="rotate(0 12 12)"/>
+          <rect x="10.7" y="0.9" width="2.6" height="3" rx="0.6" class="ic-fill" transform="rotate(45 12 12)"/>
+          <rect x="10.7" y="0.9" width="2.6" height="3" rx="0.6" class="ic-fill" transform="rotate(90 12 12)"/>
+          <rect x="10.7" y="0.9" width="2.6" height="3" rx="0.6" class="ic-fill" transform="rotate(135 12 12)"/>
+          <rect x="10.7" y="0.9" width="2.6" height="3" rx="0.6" class="ic-fill" transform="rotate(180 12 12)"/>
+          <rect x="10.7" y="0.9" width="2.6" height="3" rx="0.6" class="ic-fill" transform="rotate(225 12 12)"/>
+          <rect x="10.7" y="0.9" width="2.6" height="3" rx="0.6" class="ic-fill" transform="rotate(270 12 12)"/>
+          <rect x="10.7" y="0.9" width="2.6" height="3" rx="0.6" class="ic-fill" transform="rotate(315 12 12)"/>
+        </svg>
+      </div>
+      <div class="scanbar-pct mono" id="radarPct">0%</div>
+      <div class="scanbar-label" id="radarLabel">сканирую</div>
+      <div class="scanbar-track">
+        <div class="scanbar-fill" id="scanFill"></div>
+        <div class="scanbar-glint"></div>
+        <div class="scanbar-head" id="scanHead"></div>
+      </div>
+      <div class="scan-stats">
+        <div class="stat-pill"><b id="statDone">0</b><span>из <span id="statTotal">0</span></span></div>
+        <div class="stat-pill viol"><b id="statViol">0</b><span>нарушений</span></div>
+      </div>
+    </div>
+    <button class="btn danger" id="stopBtn"><svg class="ic ic-pulse" viewBox="0 0 24 24"><rect x="6.5" y="6.5" width="11" height="11" rx="1.5" class="ic-fill"/></svg> Остановить</button>
+  </div>
+
+  <!-- Экран 3: результаты -->
+  <div id="screenResults" class="card hidden">
+    <div id="resultsSummary" class="sub" style="margin-bottom:8px"></div>
+    <div id="violationsList"></div>
+    <div class="field-label">Выбор для репорта</div>
+    <input type="text" id="selectionInput" placeholder="Номера через запятую или «все»">
+    <button class="btn" id="reportBtn">Получить репорт(ы)</button>
+    <button class="btn secondary" id="shareBtn"><svg class="ic ic-wiggle" viewBox="0 0 24 24"><circle cx="18" cy="5" r="2.3"/><circle cx="6" cy="12" r="2.3"/><circle cx="18" cy="19" r="2.3"/><path d="M8 10.8l8-4.3M8 13.2l8 4.3"/></svg> Поделиться результатом</button>
+    <button class="btn secondary" id="fullListBtn"><svg class="ic ic-bounce-down" viewBox="0 0 24 24"><path d="M7 3.5h6.5L18 8v11.5a1 1 0 01-1 1H7a1 1 0 01-1-1v-15a1 1 0 011-1z"/><path d="M13.5 3.5V8H18"/><path d="M9.5 12l0 5M9.5 17l-2-2M9.5 17l2-2"/></svg> Скачать весь список</button>
+    <button class="btn secondary" id="newScanBtn"><svg class="ic ic-spin" viewBox="0 0 24 24"><path d="M3.5 12a8.5 8.5 0 0114.6-6"/><path d="M20.5 12a8.5 8.5 0 01-14.6 6"/><path d="M18.5 2.8v3.7h-3.7"/><path d="M5.5 21.2v-3.7h3.7"/></svg> Новый скан</button>
+  </div>
+
+  <!-- Экран 4: репорты -->
+  <div id="screenReports" class="card hidden">
+    <div id="reportsList"></div>
+    <button class="btn secondary" id="backFromReportsBtn"><svg class="ic ic-nudge-back" viewBox="0 0 24 24"><path d="M14.5 5.5l-6.5 6.5 6.5 6.5"/></svg> К результатам</button>
+  </div>
+
+<script>
+const tg = window.Telegram?.WebApp;
+tg?.ready(); tg?.expand();
+if (tg?.setHeaderColor) { try { tg.setHeaderColor('#150f0a'); } catch(e) {} }
+if (tg?.setBackgroundColor) { try { tg.setBackgroundColor('#060505'); } catch(e) {} }
+
+const initData = tg?.initData || '';
+const API = (p) => p; // относительные пути — та же origin, что и сама страница
+
+// ---- Иконки для динамических текстов (вместо стоковых эмодзи), у каждой своя анимация ----
+const ICONS = {
+  crown: { anim: 'ic-float', svg: '<path d="M3.5 8l4 3 4.5-5.5L16.5 11l4-3-1.7 9H5.2L3.5 8z"/><path d="M5 20h14"/>' },
+  ban: { anim: 'ic-shake', svg: '<circle cx="12" cy="12" r="8"/><path d="M6.3 6.3l11.4 11.4"/>' },
+  clock: { anim: 'ic-spin', svg: '<circle cx="12" cy="12" r="8"/><path d="M12 8v4.3l3 1.8"/>' },
+  xCircle: { anim: 'ic-shake', svg: '<circle cx="12" cy="12" r="8"/><path d="M9.3 9.3l5.4 5.4M14.7 9.3l-5.4 5.4"/>' },
+  send: { anim: 'ic-wiggle', svg: '<path d="M21 3L3 10.3l7 2.5m11-9.8L13 21l-2.7-8.2"/>' },
+  checkCircle: { anim: 'ic-bouncein', svg: '<circle cx="12" cy="12" r="8"/><path d="M8.3 12.5l2.6 2.6 5-5.2"/>' },
+  sparkle: { anim: 'ic-twinkle', svg: '<path d="M12 3l1.7 4.3L18 9l-4.3 1.7L12 15l-1.7-4.3L6 9l4.3-1.7L12 3z"/><path d="M19 15l.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8.8-2z"/>' },
+  link: { anim: 'ic-wiggle', svg: '<path d="M9.5 14.5l5-5"/><path d="M10.3 6.8l.9-.9a3.4 3.4 0 014.9 4.9l-.9.9M13.7 17.2l-.9.9a3.4 3.4 0 01-4.9-4.9l.9-.9"/>' },
+  stop: { anim: 'ic-pulse', svg: '<rect x="6.5" y="6.5" width="11" height="11" rx="1.5" class="ic-fill"/>' },
+  warnTriangle: { anim: 'ic-pulse', svg: '<path d="M12 4l9 15.5H3L12 4z"/><path d="M12 10v4M12 16.8h.01"/>' },
+  copy: { anim: 'ic-wiggle', svg: '<rect x="8.5" y="8.5" width="11" height="11" rx="1.6"/><path d="M5.5 15.5h-1a1 1 0 01-1-1v-9a1 1 0 011-1h9a1 1 0 011 1v1"/>' },
+  scale: { anim: 'ic-tilt', svg: '<path d="M12 3v17.5M6 21h12"/><path d="M4 7l-2.5 5.5a2.7 2.7 0 005 0L4 7z"/><path d="M20 7l-2.5 5.5a2.7 2.7 0 005 0L20 7z"/><path d="M4 7l8-2.5L20 7"/>' },
+  star: { anim: 'ic-twinkle', svg: '<path d="M12 3l1.7 4.3L18 9l-4.3 1.7L12 15l-1.7-4.3L6 9l4.3-1.7L12 3z"/>' },
+  gift: { anim: 'ic-float', svg: '<rect x="3.5" y="9" width="17" height="11" rx="1"/><path d="M3.5 9V6.5a1 1 0 011-1h15a1 1 0 011 1V9M12 5.5V20"/><path d="M12 5.5C10 2 6 4 7 6.5h5zM12 5.5c2-3.5 6-1.5 5 1h-5z"/>' },
+  bolt: { anim: 'ic-flicker', svg: '<path d="M13 3L4.5 14h6L11 21l8.5-11h-6L13 3z"/>' },
+};
+function ic(name, cls) {
+  const def = ICONS[name];
+  if (!def) return '';
+  return `<svg class="ic ${def.anim}${cls ? ' ' + cls : ''}" viewBox="0 0 24 24">${def.svg}</svg>`;
+}
+
+let myUser = null;
+
+let mode = 'channel';
+let currentJobId = null;
+let pollTimer = null;
+let lastJobResult = null; // {channelLink, totalViolations, top, ...}
+
+function setState(state) { document.body.dataset.state = state; }
+function haptic(type) { try { tg?.HapticFeedback?.impactOccurred(type || 'light'); } catch(e) {} }
+function showScreen(id) {
+  ['screenSettings','screenInput','screenScan','screenResults','screenReports'].forEach(s => {
+    document.getElementById(s).classList.toggle('hidden', s !== id);
+  });
+  const el = document.getElementById(id);
+  el.classList.remove('screen-enter');
+  void el.offsetWidth; // рестарт анимации
+  el.classList.add('screen-enter');
+}
+function flash(kind) {
+  const el = document.getElementById('flashLayer');
+  el.className = 'flash-layer'; void el.offsetWidth;
+  el.className = 'flash-layer ' + kind;
+}
+function banner(text, kind) {
+  const el = document.getElementById('banner');
+  if (!text) { el.innerHTML = ''; return; }
+  el.innerHTML = `<div class="banner ${kind||'warn'}">${text}</div>`;
+}
+
+async function api(path, opts) {
+  const res = await fetch(path, opts);
+  let data;
+  try { data = await res.json(); } catch(e) { data = {}; }
+  return { ok: res.ok, status: res.status, data };
+}
+
+// ---- Инициализация: кто я, забанен ли, кулдаун, лимиты ----
+async function init() {
+  setState('idle');
+  const { ok, data } = await api('/api/me', {
+    method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ initData })
+  });
+  if (!ok) { banner('Не удалось подтвердить личность. Открой Mini App через кнопку в боте, не напрямую по ссылке.', 'err'); return; }
+  myUser = data;
+
+  document.getElementById('roleBadge').innerHTML = data.isOwner ? ic('crown') + ' владелец' : data.isSubAdmin ? ic('crown') + ' админ' : (data.premium ? ic('star') + ' premium' : '');
+  document.getElementById('roleBadge').classList.toggle('owner', !!(data.isOwner || data.isSubAdmin || data.premium));
+  document.getElementById('userChipName').textContent = data.username ? '@' + data.username : (data.firstName || ('id' + data.id));
+  document.getElementById('adminTab').classList.toggle('hidden', !(data.isOwner || data.isSubAdmin));
+
+  if (data.banned) {
+    banner(ic('ban') + ' Ты заблокирован в этом боте.', 'err');
+    document.getElementById('startBtn').disabled = true;
+    return;
+  }
+  if (data.cooldownMs > 0) {
+    const mins = Math.ceil(data.cooldownMs / 60000);
+    banner(`${ic('clock')} Кулдаун ещё ${mins} мин.`, 'warn');
+  } else if (data.dailyLimitReached) {
+    const resetMins = Math.ceil(data.msUntilDailyReset / 60000);
+    banner(`${ic('xCircle')} Дневной лимит сканов исчерпан. Сброс через ${Math.floor(resetMins/60)}ч ${resetMins%60}м. ${ic('star','ic-gold')} Premium снимает лимит — вкладка Premium в настройках.`, 'warn');
+  }
+  renderPremiumPane();
+
+  // Если открыли по расшаренной ссылке (?job=...) — сразу показываем чужой скан, а не форму ввода.
+  const sharedJobId = new URLSearchParams(location.search).get('job');
+  if (sharedJobId) {
+    currentJobId = sharedJobId;
+    const res = await api(`/api/scan/status?jobId=${encodeURIComponent(sharedJobId)}`);
+    if (res.ok && res.data.status === 'done') {
+      banner(`${ic('link', 'ic-cyan')} Это результат скана, которым с тобой поделились.`, 'warn');
+      handleScanFinished(res.data);
+    } else {
+      banner(ic('xCircle') + ' Этот скан больше не найден — возможно, ссылка устарела.', 'err');
+    }
+  }
+}
+init();
+
+// ---- Экран ввода ----
+document.querySelectorAll('.chip').forEach((chip) => {
+  chip.addEventListener('click', () => {
+    document.querySelectorAll('.chip').forEach(c => c.classList.remove('active'));
+    chip.classList.add('active');
+    mode = chip.dataset.mode;
+    haptic();
+  });
+});
+
+document.getElementById('linkInput').addEventListener('input', (e) => {
+  e.target.classList.toggle('live', e.target.value.trim().length > 0);
+});
+
+document.getElementById('startBtn').addEventListener('click', async () => {
+  const link = document.getElementById('linkInput').value.trim();
+  if (!link) { banner('Вставь ссылку на канал или группу.', 'warn'); return; }
+  banner('');
+  setState('idle');
+  haptic('medium');
+  document.getElementById('startBtn').disabled = true;
+
+  const { ok, status, data } = await api('/api/scan/start', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ initData, link, mode })
+  });
+  document.getElementById('startBtn').disabled = false;
+
+  if (!ok) {
+    if (status === 429 && data.error === 'daily_limit') {
+      const mins = Math.ceil(data.msUntilDailyReset / 60000);
+      banner(`${ic('xCircle')} Дневной лимит сканов исчерпан. Сброс через ${Math.floor(mins/60)}ч ${mins%60}м. ${ic('star')} Premium снимает лимит — раздел в настройках.`, 'warn');
+    }
+    else if (status === 429) banner(`${ic('clock')} Кулдаун ещё ${Math.ceil(data.remainingMs/60000)} мин.`, 'warn');
+    else if (status === 403) banner(ic('ban') + ' Ты заблокирован в этом боте.', 'err');
+    else if (data.error === 'bad_link') banner(ic('xCircle') + ' Нужна ссылка вида https://t.me/name или https://t.me/+xxxx', 'err');
+    else banner(ic('xCircle') + ' Не получилось запустить скан.', 'err');
+    return;
+  }
+  currentJobId = data.jobId;
+  stopRequested = false;
+  document.getElementById('stopBtn').disabled = false;
+  document.getElementById('scanFill').style.width = '0%';
+  document.getElementById('scanHead').style.left = '0%';
+  document.getElementById('radarPct').textContent = '0%';
+  showScreen('screenScan');
+  pollStatus();
+});
+
+// ---- Экран скана ----
+let stopRequested = false;
+document.getElementById('stopBtn').addEventListener('click', async () => {
+  if (stopRequested) return;
+  stopRequested = true;
+  haptic('rigid');
+  document.getElementById('stopBtn').disabled = true;
+  api('/api/scan/stop', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ initData, jobId: currentJobId }) }).catch(() => {});
+  clearInterval(pollTimer);
+  banner('');
+  setState('idle');
+  document.getElementById('linkInput').value = '';
+  showScreen('screenInput');
+});
+
+function bumpStat(id, value) {
+  const el = document.getElementById(id);
+  if (el.textContent !== String(value)) {
+    el.textContent = value;
+    el.classList.remove('bump');
+    void el.offsetWidth;
+    el.classList.add('bump');
+  }
+}
+
+function pollStatus() {
+  clearInterval(pollTimer);
+  pollTimer = setInterval(async () => {
+    const { ok, data } = await api(`/api/scan/status?jobId=${encodeURIComponent(currentJobId)}`);
+    if (!ok) { clearInterval(pollTimer); banner('Задача не найдена — начни новый скан.', 'err'); showScreen('screenInput'); return; }
+
+    const pct = data.total > 0 ? Math.min(100, Math.round(data.done / data.total * 100)) : 0;
+    document.getElementById('scanFill').style.width = pct + '%';
+    document.getElementById('scanHead').style.left = pct + '%';
+    document.getElementById('radarPct').textContent = pct + '%';
+    if (!stopRequested) {
+      document.getElementById('radarLabel').textContent = data.isGroupChat ? 'сканирую группу' : 'сканирую канал';
+    }
+    bumpStat('statDone', data.done);
+    document.getElementById('statTotal').textContent = data.total;
+    bumpStat('statViol', data.violCount);
+
+    if (data.status === 'done' || data.status === 'error' || data.status === 'pending') {
+      clearInterval(pollTimer);
+      handleScanFinished(data);
+    }
+  }, 1200);
+}
+
+function handleScanFinished(data) {
+  if (data.status === 'pending') {
+    setState('idle');
+    banner(ic('send') + ' ' + (data.message || 'Заявка на вступление отправлена — попробуй позже.'), 'warn');
+    showScreen('screenInput');
+    return;
+  }
+  if (data.status === 'error') {
+    setState('idle');
+    banner(ic('xCircle') + ' ' + (data.message || 'Ошибка при скане.'), 'err');
+    showScreen('screenInput');
+    return;
+  }
+
+  lastJobResult = data;
+  haptic('heavy');
+
+  if (data.totalViolations === 0) {
+    setState('safe');
+    flash('safe');
+    document.getElementById('resultsSummary').innerHTML = `${ic('checkCircle', 'ic-ok')} Проверено ${data.textMessagesCount} сообщений в ${data.channelLink} — нарушений не найдено.`;
+    document.getElementById('violationsList').innerHTML = `<div class="empty"><div class="empty-icon" style="color:var(--ok)">${ic('sparkle')}</div>Чисто</div>`;
+    document.getElementById('selectionInput').classList.add('hidden');
+    document.getElementById('reportBtn').classList.add('hidden');
+    document.getElementById('fullListBtn').classList.add('hidden');
+  } else {
+    setState('danger');
+    flash('danger');
+    let summary = `${ic('link', 'ic-cyan')} Топ ${data.top.length} из ${data.totalViolations} нарушений в ${data.channelLink}`;
+    if (data.aborted) summary = ic('stop', 'ic-danger') + ' Скан остановлен вручную. ' + summary;
+    if (data.failedChunks) summary += ` (${ic('warnTriangle', 'ic-amber')} ${data.failedChunks} пачек не проверились)`;
+    document.getElementById('resultsSummary').innerHTML = summary;
+    document.getElementById('selectionInput').classList.remove('hidden');
+    document.getElementById('reportBtn').classList.remove('hidden');
+    document.getElementById('fullListBtn').classList.remove('hidden');
+
+    document.getElementById('violationsList').innerHTML = data.top.map((v, i) => {
+      const filled = Math.max(1, Math.min(5, v.severity || 1));
+      const sevColor = ['','var(--sev1)','var(--sev2)','var(--sev3)','var(--sev4)','var(--sev5)'][filled];
+      const bars = Array.from({length:5}, (_,i) => `<i style="${i < filled ? `background:${sevColor}` : ''}"></i>`).join('');
+      return `<div class="vrow" style="animation-delay:${Math.min(i, 10) * 45}ms">
+        <div class="vidx mono">#${v.index}</div>
+        <div style="flex:1">
+          <div class="vsev">${bars}</div>
+          <div class="vcat">${escapeHtml(v.category || 'нарушение')}</div>
+          <div class="vreason">${escapeHtml(v.reason || '')}</div>
+        </div>
+      </div>`;
+    }).join('');
+  }
+
+  showScreen('screenResults');
+}
+
+function escapeHtml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+// ---- Выбор нарушений -> репорт ----
+function parseSelection(text, max) {
+  const raw = text.trim().toLowerCase();
+  if (raw === 'все' || raw === 'всё' || raw === 'all') return Array.from({length: max}, (_,i) => i+1);
+  const parts = raw.split(/[,\s]+/).filter(Boolean);
+  const nums = new Set();
+  for (const p of parts) {
+    const n = parseInt(p, 10);
+    if (!Number.isInteger(n) || n < 1 || n > max) return null;
+    nums.add(n);
+  }
+  return nums.size ? [...nums].sort((a,b)=>a-b) : null;
+}
+
+document.getElementById('reportBtn').addEventListener('click', async () => {
+  if (!lastJobResult) return;
+  const indices = parseSelection(document.getElementById('selectionInput').value, lastJobResult.totalViolations);
+  if (!indices) { banner(`Напиши номера через запятую (1-${lastJobResult.totalViolations}) или «все».`, 'warn'); return; }
+  banner('');
+  haptic('medium');
+  document.getElementById('reportBtn').disabled = true;
+  document.getElementById('reportBtn').textContent = 'Готовлю...';
+
+  const { ok, data } = await api('/api/report', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ initData, jobId: currentJobId, indices })
+  });
+
+  document.getElementById('reportBtn').disabled = false;
+  document.getElementById('reportBtn').textContent = 'Получить репорт(ы)';
+
+  if (!ok || !data.reports?.length) { banner('Не получилось сгенерировать репорт.', 'err'); return; }
+
+  document.getElementById('reportsList').innerHTML = data.reports.map((r, i) => `
+    <div class="report-card" style="animation-delay:${Math.min(i, 10) * 60}ms">
+      <div class="vcat">#${r.index} — ${escapeHtml(r.category||'')} (${r.severity||'?'}/5)</div>
+      <div class="vlink"><a href="${r.link}" target="_blank" style="color:var(--link)">${r.link}</a></div>
+      <div class="report-text mono" id="reportText${r.index}">${escapeHtml(r.reportText)}</div>
+      <button class="copy-btn" data-copy="reportText${r.index}">${ic('copy')} Скопировать репорт</button>
+      <div class="laws">${ic('scale', 'ic-cyan')} Законы:
+        ${r.lawLinks.map(l => `<a href="${l}" target="_blank">${l}</a>`).join('')}
+      </div>
+    </div>
+  `).join('');
+
+  document.querySelectorAll('.copy-btn').forEach(b => b.addEventListener('click', () => {
+    const text = document.getElementById(b.dataset.copy).textContent;
+    navigator.clipboard?.writeText(text).then(() => { b.innerHTML = ic('checkCircle', 'ic-ok') + ' Скопировано'; setTimeout(() => b.innerHTML = ic('copy') + ' Скопировать репорт', 1500); });
+  }));
+
+  showScreen('screenReports');
+});
+
+document.getElementById('fullListBtn').addEventListener('click', () => {
+  window.open(`/api/scan/full?jobId=${encodeURIComponent(currentJobId)}`, '_blank');
+});
+document.getElementById('newScanBtn').addEventListener('click', () => {
+  document.getElementById('linkInput').value = '';
+  document.getElementById('selectionInput').value = '';
+  banner('');
+  setState('idle');
+  showScreen('screenInput');
+});
+document.getElementById('backFromReportsBtn').addEventListener('click', () => showScreen('screenResults'));
+
+// ---- Поделиться результатом ----
+document.getElementById('shareBtn').addEventListener('click', () => {
+  if (!lastJobResult || !currentJobId) return;
+  haptic('light');
+  const shareUrl = `${location.origin}${location.pathname}?job=${encodeURIComponent(currentJobId)}`;
+  const text = lastJobResult.totalViolations === 0
+    ? `${lastJobResult.channelLink} — проверено, нарушений не найдено`
+    : `${lastJobResult.channelLink} — найдено нарушений: ${lastJobResult.totalViolations}`;
+  const url = `https://t.me/share/url?url=${encodeURIComponent(shareUrl)}&text=${encodeURIComponent(text)}`;
+  if (tg?.openTelegramLink) tg.openTelegramLink(url); else window.open(url, '_blank');
+});
+
+// ---- Настройки: шестерёнка, вкладки ----
+document.getElementById('settingsBtn').addEventListener('click', (e) => {
+  haptic('light');
+  e.currentTarget.blur();
+  e.currentTarget.classList.add('spin-hover');
+  const gearIcon = document.getElementById('gearIcon');
+  gearIcon.classList.remove('ic-spin-once');
+  void gearIcon.offsetWidth;
+  gearIcon.classList.add('ic-spin-once');
+  showScreen('screenSettings');
+  renderPremiumPane();
+  if (myUser && (myUser.isOwner || myUser.isSubAdmin)) renderAdminPane();
+});
+document.getElementById('backFromSettingsBtn').addEventListener('click', () => {
+  document.getElementById('settingsBtn').classList.remove('spin-hover');
+  showScreen('screenInput');
+});
+
+document.querySelectorAll('.settings-tab').forEach((tab) => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.settings-tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.settings-pane').forEach(p => p.classList.remove('active'));
+    tab.classList.add('active');
+    document.getElementById('pane' + tab.dataset.tab[0].toUpperCase() + tab.dataset.tab.slice(1)).classList.add('active');
+    haptic();
+  });
+});
+
+// ---- Premium-вкладка ----
+function limitStatusHtml(user) {
+  if (user.isOwner || user.isSubAdmin) return `<div class="premium-perk">${ic('crown')} Без ограничений — права админа</div>`;
+  if (user.dailyLimit == null) {
+    return `<div class="premium-perk">${ic('sparkle')} Сканы без дневного лимита</div><div class="premium-perk">${ic('clock')} Кулдаун между сканами: ${user.cooldownMinutes} мин</div>`;
+  }
+  const left = Math.max(0, user.dailyLimit - (user.scansToday || 0));
+  return `<div class="premium-perk">${ic('sparkle')} Осталось сканов сегодня: ${left}/${user.dailyLimit} <span style="color:var(--hint)">(сброс в 00:00 UTC)</span></div><div class="premium-perk">${ic('clock')} Кулдаун между сканами: ${user.cooldownMinutes} мин</div>`;
+}
+
+function renderPremiumPane() {
+  const el = document.getElementById('premiumContent');
+  if (!myUser) { el.innerHTML = ''; return; }
+  if (myUser.isOwner || myUser.isSubAdmin) {
+    el.innerHTML = `<div class="premium-active-badge">${ic('crown')} У тебя права админа — ограничений нет</div>`;
+    return;
+  }
+  if (myUser.premium) {
+    el.innerHTML = `<div class="premium-active-badge">${ic('star')} Premium активен</div>${limitStatusHtml(myUser)}`;
+    return;
+  }
+  el.innerHTML = `
+    <div class="premium-hero">
+      ${ic('star')}
+      <h2>Channel Guard Premium</h2>
+      <div style="color:var(--hint);font-size:12.5px">Быстрее и без ограничений</div>
+    </div>
+    <div class="premium-perk">${ic('bolt')} Кулдаун между сканами — 5 минут вместо 10</div>
+    <div class="premium-perk">${ic('sparkle')} Сканы без дневного лимита</div>
+    <button class="btn gold" id="payPremiumBtn">${ic('star')} Оплатить ${myUser.premiumPriceStars} ${ic('star', 'ic-gold')}</button>
+    <div class="limit-status">${limitStatusHtml(myUser)}</div>
+  `;
+  document.getElementById('payPremiumBtn').addEventListener('click', payPremium);
+}
+
+async function payPremium() {
+  haptic('medium');
+  const payBtn = document.getElementById('payPremiumBtn');
+  payBtn.disabled = true;
+  const { ok, data } = await api('/api/premium/invoice', {
+    method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ initData })
+  });
+  if (!ok || !data.link) { banner(ic('xCircle') + ' Не получилось создать счёт на оплату.', 'err'); payBtn.disabled = false; return; }
+
+  if (tg?.openInvoice) {
+    tg.openInvoice(data.link, async (status) => {
+      payBtn.disabled = false;
+      if (status === 'paid') {
+        haptic('heavy');
+        const refreshed = await api('/api/me', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ initData }) });
+        if (refreshed.ok) { myUser = refreshed.data; }
+        renderPremiumPane();
+        banner(ic('star') + ' Premium активирован!', 'warn');
+      }
+    });
+  } else {
+    window.open(data.link, '_blank');
+    payBtn.disabled = false;
+  }
+}
+
+// ---- Админ-вкладка ----
+async function renderAdminPane() {
+  const el = document.getElementById('adminContent');
+  el.innerHTML = '<div class="empty">Загружаю...</div>';
+  const { ok, data } = await api('/api/admin/users', {
+    method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ initData })
+  });
+  if (!ok) { el.innerHTML = '<div class="empty">Нет доступа.</div>'; return; }
+  if (!data.users.length) { el.innerHTML = '<div class="empty">Пока никто не писал боту.</div>'; return; }
+
+  let extra = '';
+  if (data.isOwner && data.pendingRequests > 0) {
+    extra = `<div class="banner warn">${ic('send')} Заявок на подтверждение от админов: ${data.pendingRequests} — они приходят тебе отдельными сообщениями в боте.</div>`;
+  }
+
+  el.innerHTML = extra + data.users.map((u) => {
+    const label = u.username ? '@' + u.username : (u.firstName || ('id' + u.id));
+    let btns = `<button class="mini-btn ${u.banned ? 'ok' : 'danger'}" data-act="ban" data-id="${u.id}">${u.banned ? 'Разбанить' : 'Забанить'}</button>`;
+    if (data.isOwner) {
+      btns += `<button class="mini-btn ${u.premium ? 'gold' : ''}" data-act="premium" data-id="${u.id}">${u.premium ? 'Убрать Prem.' : 'Дать Prem.'}</button>`;
+    }
+    return `<div class="admin-row">
+      <div class="who">${escapeHtml(label)}<span class="tag">id${u.id}${u.isSubAdmin ? ' · админ' : ''}${u.premium ? ' · premium' : ''}${u.banned ? ' · забанен' : ''}</span></div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap">${btns}</div>
+    </div>`;
+  }).join('');
+
+  el.querySelectorAll('[data-act="premium"]').forEach((b) => b.addEventListener('click', async () => {
+    haptic('medium'); b.disabled = true;
+    await api('/api/admin/premium', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ initData, targetId: Number(b.dataset.id) }) });
+    renderAdminPane();
+  }));
+
+  el.querySelectorAll('[data-act="ban"]').forEach((b) => b.addEventListener('click', () => {
+    const row = b.closest('.admin-row');
+    if (row.querySelector('.ban-reason-box')) return;
+    const box = document.createElement('div');
+    box.className = 'ban-reason-box';
+    box.style.cssText = 'width:100%;margin-top:8px;';
+    box.innerHTML = `<input type="text" placeholder="Причина (обязательно)" style="margin-top:0" class="ban-reason-input">
+      <button class="btn secondary" style="margin-top:8px;padding:9px" data-confirm="${b.dataset.id}">Подтвердить</button>`;
+    row.appendChild(box);
+    box.querySelector('[data-confirm]').addEventListener('click', async () => {
+      const reason = box.querySelector('.ban-reason-input').value.trim();
+      if (!reason) { box.querySelector('.ban-reason-input').focus(); return; }
+      haptic('medium');
+      const { ok, data } = await api('/api/admin/ban', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ initData, targetId: Number(b.dataset.id), reason })
+      });
+      if (ok) banner(data.applied ? (ic('checkCircle', 'ic-ok') + ' Готово.') : (ic('send') + ' Заявка отправлена владельцу на подтверждение.'), 'warn');
+      renderAdminPane();
+    });
+  }));
+}
+</script>
+</body>
+</html>
